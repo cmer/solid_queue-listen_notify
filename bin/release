@@ -3,12 +3,13 @@
 
 # Release script for solid_queue-listen_notify.
 #
-# Usage: bin/release [VERSION] [--yes] [--skip-bundle] [--llm claude|codex]
+# Usage: bin/release [VERSION] [--yes] [--publish] [--skip-bundle] [--llm claude|codex]
 #
 # Prompts for the version if not given. Moves the CHANGELOG's Unreleased
 # entries under the new version with today's date (delegated to `claude -p`,
 # falling back to `codex exec`, then verified deterministically), bumps
-# version.rb, refreshes Gemfile.lock, commits and tags. Pushing is left to you.
+# version.rb, refreshes Gemfile.lock, commits and tags. Then offers to push
+# and publish to RubyGems (--publish skips that prompt).
 
 require "date"
 require "open3"
@@ -33,13 +34,14 @@ def run!(*cmd, chdir: ROOT)
   out
 end
 
-options = { yes: false, skip_bundle: false, llm: nil }
+options = { yes: false, skip_bundle: false, llm: nil, publish: false }
 args = ARGV.dup
 version_arg = nil
 until args.empty?
   case (arg = args.shift)
   when "--yes" then options[:yes] = true
   when "--skip-bundle" then options[:skip_bundle] = true
+  when "--publish" then options[:publish] = true
   when "--llm" then options[:llm] = args.shift or abort!("--llm requires a value (claude or codex)")
   when /\A-/ then abort! "Unknown option #{arg}"
   else
@@ -192,7 +194,31 @@ run!("git", "commit", "-m", "Release #{tag}")
 run!("git", "tag", "-a", tag, "-m", "Release #{tag}")
 
 puts
-puts "\e[32mDone.\e[0m Released #{tag} locally. To publish:"
+puts "\e[32mDone.\e[0m Released #{tag} locally."
 puts
-puts "  git push origin main --follow-tags"
-puts "  bundle exec rake release   # builds the gem and pushes to RubyGems"
+
+publish = options[:publish]
+unless publish
+  print "Push to origin and publish #{tag} to RubyGems? This cannot be undone. [y/N] "
+  publish = $stdin.gets&.strip&.downcase&.start_with?("y")
+end
+
+unless publish
+  puts "Not publishing. When ready:"
+  puts
+  puts "  git push origin main --follow-tags"
+  puts "  bundle exec rake release   # builds the gem and pushes to RubyGems"
+  exit 0
+end
+
+# Inherit stdio here: `gem push` may prompt for a RubyGems OTP.
+step "Pushing to origin"
+system("git", "push", "origin", "main", "--follow-tags", chdir: ROOT) or
+  abort! "git push failed — fix and re-run: git push origin main --follow-tags && bundle exec rake release"
+
+step "Building and publishing to RubyGems"
+system("bundle", "exec", "rake", "release", chdir: ROOT) or
+  abort! "rake release failed — the commit and tag are pushed; re-run `bundle exec rake release` once fixed."
+
+puts
+puts "\e[32mPublished #{tag}.\e[0m"
