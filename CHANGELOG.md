@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-28
+
 ### Fixed
 
 - A raising `ActiveSupport::Notifications` subscriber can no longer strand a worker at the raised polling interval mid-registration, or run between a notification and the worker wake-ups it triggers.
@@ -27,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
-[Unreleased]: https://github.com/cmer/solid_queue-listen_notify/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/cmer/solid_queue-listen_notify/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/cmer/solid_queue-listen_notify/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/cmer/solid_queue-listen_notify/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/cmer/solid_queue-listen_notify/compare/v0.1.0...v0.5.0
 [0.1.0]: https://github.com/cmer/solid_queue-listen_notify/releases/tag/v0.1.0
