@@ -448,16 +448,59 @@ class RegistryTest < Minitest::Test
     assert_same current, @registry.listener, "a stale crash report must not detach the live listener"
   end
 
-  def test_a_crash_hands_the_still_registered_workers_to_the_module
+  def test_a_crash_hands_the_still_registered_workers_and_their_intervals_to_the_module
     first = FakeWorker.new
     second = FakeWorker.new
-    [ first, second ].each { |worker| @registry.register(worker) }
+    @registry.register(first, restore_interval: 0.1)
+    @registry.register(second)
     reported = []
-    SolidQueue::ListenNotify.stubs(:listener_crashed).with { |_error, workers| reported = workers; true }
+    SolidQueue::ListenNotify.stubs(:listener_crashed).with { |_error, stranded| reported = stranded; true }
 
     @registry.listener_crashed(listener, RuntimeError.new("boom"))
 
-    assert_equal [ first, second ], reported
+    assert_equal [ [ first, 0.1 ], [ second, nil ] ], reported
+  end
+
+  def test_a_deregistered_worker_is_not_handed_over_on_a_later_crash
+    gone = FakeWorker.new
+    staying = FakeWorker.new
+    @registry.register(gone, restore_interval: 0.1)
+    @registry.register(staying, restore_interval: 0.5)
+    @registry.deregister(gone)
+    reported = []
+    SolidQueue::ListenNotify.stubs(:listener_crashed).with { |_error, stranded| reported = stranded; true }
+
+    @registry.listener_crashed(listener, RuntimeError.new("boom"))
+
+    assert_equal [ [ staying, 0.5 ] ], reported
+  end
+
+  def test_an_interval_is_handed_over_exactly_once
+    worker = FakeWorker.new
+    @registry.register(worker, restore_interval: 0.1)
+    reported = []
+    SolidQueue::ListenNotify.stubs(:listener_crashed).with { |_error, stranded| reported << stranded; true }
+
+    @registry.listener_crashed(listener, RuntimeError.new("boom"))
+    @registry.register(FakeWorker.new) # revives a listener
+    @registry.listener_crashed(@listeners.last, RuntimeError.new("boom again"))
+
+    assert_equal [ [ worker, 0.1 ] ], reported.first
+    assert reported.last.all? { |_worker, interval| interval.nil? },
+      "an interval restored after the first crash must not be \"restored\" again after the second"
+  end
+
+  def test_a_reregistration_never_overwrites_the_recorded_interval
+    worker = FakeWorker.new
+    @registry.register(worker, restore_interval: 0.1)
+    @registry.register(worker, restore_interval: 99)
+    reported = []
+    SolidQueue::ListenNotify.stubs(:listener_crashed).with { |_error, stranded| reported = stranded; true }
+
+    @registry.listener_crashed(listener, RuntimeError.new("boom"))
+
+    assert_equal [ [ worker, 0.1 ] ], reported,
+      "the interval the worker originally had is the only one worth restoring"
   end
 
   # Concurrency ----------------------------------------------------------------

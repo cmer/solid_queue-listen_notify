@@ -39,15 +39,17 @@ class RegisterTest < Minitest::Test
   end
 
   class FakeRegistry
-    attr_reader :registered, :deregistered
+    attr_reader :registered, :restore_intervals, :deregistered
 
     def initialize
       @registered = []
+      @restore_intervals = []
       @deregistered = []
     end
 
-    def register(worker)
+    def register(worker, restore_interval: nil)
       @registered << worker
+      @restore_intervals << restore_interval
       self
     end
 
@@ -106,12 +108,33 @@ class RegisterTest < Minitest::Test
 
     assert_in_delta 10.0, worker.polling_interval
     assert_equal [ worker ], registry.registered
+    assert_in_delta 0.1, registry.restore_intervals.first, 0.001,
+      "the replaced interval must be recorded with the worker, where the crash path looks for it"
 
     override = events_named(events, "override_polling_interval").first
 
     assert_equal "worker-1", override.payload[:worker_name]
     assert_in_delta 0.1, override.payload[:from]
     assert_in_delta 10.0, override.payload[:to]
+  end
+
+  # The mutation and its record have to be adjacent: the override event fires
+  # only after the registry has the original interval, so a subscriber raising
+  # mid-registration can never strand a raised interval nobody remembers.
+  def test_a_raising_subscriber_cannot_strand_a_raised_interval
+    stub_operational_registry
+    worker = FakeWorker.new(0.1, "worker-1")
+    subscriber = ActiveSupport::Notifications.subscribe("override_polling_interval.solid_queue_listen_notify") do |*|
+      raise "metrics bug"
+    end
+
+    log = capture_listen_notify_log { LN.register(worker) }
+
+    assert_in_delta 0.1, worker.polling_interval, 0.001,
+      "a registration that failed must leave the worker exactly as it found it"
+    assert_includes log, "could not register a worker"
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscriber)
   end
 
   def test_a_worker_that_already_polls_less_often_is_never_slowed_down
@@ -201,9 +224,13 @@ class RegisterTest < Minitest::Test
   # arrive. When the listener dies for good that promise is broken, and a worker
   # left polling every 10 seconds with nothing to wake it is strictly worse than
   # never having installed the gem — so the promise has to be withdrawn.
+  #
+  # `listener_crashed` receives the registry's [worker, original_interval]
+  # pairs; the tests hand back exactly what the fake registry recorded, which is
+  # what the real one does.
 
   def test_a_listener_death_puts_every_raised_interval_back
-    stub_operational_registry
+    registry = stub_operational_registry
     first = FakeWorker.new(0.1, "worker-1")
     second = FakeWorker.new(0.5, "worker-2")
     [ first, second ].each { |worker| LN.register(worker) }
@@ -211,31 +238,31 @@ class RegisterTest < Minitest::Test
     assert_in_delta 10.0, first.polling_interval
     assert_in_delta 10.0, second.polling_interval
 
-    capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), [ first, second ]) }
+    capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), stranded_pairs(registry)) }
 
     assert_in_delta 0.1, first.polling_interval
     assert_in_delta 0.5, second.polling_interval
   end
 
   def test_a_listener_death_wakes_the_workers_it_restored
-    stub_operational_registry
+    registry = stub_operational_registry
     worker = WakeableWorker.new(0.1, "worker-1")
     LN.register(worker)
 
-    capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), [ worker ]) }
+    capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), stranded_pairs(registry)) }
 
     assert_equal 1, worker.wake_ups,
       "a sleeping worker has to be woken to re-read the interval, not left to finish its 10s sleep"
   end
 
   def test_a_listener_death_instruments_the_restore_and_says_so_loudly
-    stub_operational_registry
+    registry = stub_operational_registry
     worker = FakeWorker.new(0.1, "worker-1")
     LN.register(worker)
 
     log = nil
     events = capture_listen_notify_events do
-      log = capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), [ worker ]) }
+      log = capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), stranded_pairs(registry)) }
     end
 
     restore = events_named(events, "override_polling_interval").last
@@ -252,40 +279,26 @@ class RegisterTest < Minitest::Test
   end
 
   def test_a_worker_whose_interval_was_never_raised_is_left_alone
-    stub_operational_registry
+    registry = stub_operational_registry
     worker = FakeWorker.new(30, "worker-1")
     LN.register(worker)
 
     events = capture_listen_notify_events do
-      capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), [ worker ]) }
+      capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), stranded_pairs(registry)) }
     end
 
     assert_equal 30, worker.polling_interval
     assert_empty events_named(events, "override_polling_interval")
   end
 
-  def test_a_deregistered_worker_is_no_longer_restored_on_a_later_death
-    registry = stub_operational_registry
-    REGISTRY_CLASS.stubs(:instantiated?).returns(true)
-    worker = FakeWorker.new(0.1, "worker-1")
-    LN.register(worker)
-    worker.polling_interval = 7 # whatever the application did with it afterwards
-    LN.deregister(worker)
-
-    capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), [ worker ]) }
-
-    assert_equal 7, worker.polling_interval
-    assert_equal [ worker ], registry.deregistered
-  end
-
   def test_a_worker_that_cannot_be_restored_does_not_stop_the_others
-    stub_operational_registry
+    registry = stub_operational_registry
     broken = FakeWorker.new(0.1, "broken")
     healthy = FakeWorker.new(0.1, "healthy")
     [ broken, healthy ].each { |worker| LN.register(worker) }
     broken.stubs(:polling_interval=).raises(NoMethodError, "API drift")
 
-    capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), [ broken, healthy ]) }
+    capture_listen_notify_log { LN.listener_crashed(RuntimeError.new("boom"), stranded_pairs(registry)) }
 
     assert_in_delta 0.1, healthy.polling_interval
   end
@@ -407,5 +420,11 @@ class RegisterTest < Minitest::Test
       FakeRegistry.new.tap do |registry|
         REGISTRY_CLASS.stubs(:instance).returns(registry)
       end
+    end
+
+    # What Registry#listener_crashed hands to the module: every registered
+    # worker paired with the interval recorded for it.
+    def stranded_pairs(registry)
+      registry.registered.zip(registry.restore_intervals)
     end
 end

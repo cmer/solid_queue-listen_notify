@@ -60,12 +60,6 @@ module SolidQueue
     @@preflight_result = nil
     @@fallback_logger = nil
 
-    # worker => the polling interval it had before we raised it. Kept so that a
-    # listener which dies for good can put every worker back where it found it,
-    # rather than leaving it polling every 10 seconds with nothing to wake it.
-    @@overrides_lock = Mutex.new
-    @@overrides = {}.compare_by_identity
-
     # `SOLID_QUEUE_LISTEN_NOTIFY_ENABLED=false` is documented as a kill switch
     # that needs no deploy, and an application that sets `enabled` explicitly —
     # to either value — would otherwise overwrite the mattr default and take
@@ -107,8 +101,15 @@ module SolidQueue
       return nil unless operational?
 
       restore_to = raise_polling_interval(worker)
-      Registry.instance.register(worker)
-      remember_override(worker, restore_to)
+      Registry.instance.register(worker, restore_interval: restore_to)
+
+      # Instrumented only once the registry has recorded the override, so that
+      # a subscriber raising here finds the bookkeeping already consistent — it
+      # can never strand a raised interval that nobody remembers.
+      if restore_to
+        instrument :override_polling_interval,
+          worker_name: worker_name(worker), from: restore_to, to: fallback_polling_interval.to_f
+      end
       nil
     rescue StandardError, ScriptError => e
       # A worker left polling every 10 seconds with nothing to wake it is the one
@@ -121,12 +122,11 @@ module SolidQueue
     # on_worker_stop is not guaranteed to run at all (a supervisor that exceeds
     # its shutdown timeout exits without callbacks), so this is a convenience,
     # never the thing cleanup depends on.
+    #
+    # Never instantiate the registry just to deregister: this hook also runs in
+    # processes where nothing ever registered, and building a registry there
+    # would be building one that only exists to be empty.
     def deregister(worker)
-      forget_override(worker)
-
-      # Never instantiate the registry just to deregister: this hook also runs in
-      # processes where nothing ever registered, and building a registry there
-      # would be building one that only exists to be empty.
       return nil unless Registry.instantiated?
 
       Registry.instance.deregister(worker)
@@ -136,7 +136,9 @@ module SolidQueue
     end
 
     # Called by the registry when the listener thread died for good — a fatal,
-    # non-connection error, which no reconnect will fix.
+    # non-connection error, which no reconnect will fix. `stranded` is the
+    # registry's list of [worker, original_interval] pairs; the interval is nil
+    # for workers whose interval was never raised.
     #
     # The gem raised these workers' polling intervals on the strength of a
     # promise it can no longer keep, and a worker left polling every 10 seconds
@@ -144,8 +146,8 @@ module SolidQueue
     # gem. So the promise is withdrawn: every interval we raised goes back, every
     # worker is woken so it re-reads it rather than finishing its current sleep,
     # and the whole thing is said out loud.
-    def listener_crashed(error, workers)
-      restored = Array(workers).count { |worker| restore_override(worker) }
+    def listener_crashed(error, stranded)
+      restored = Array(stranded).count { |worker, interval| restore_override(worker, interval) }
       announce_listener_death(error, restored)
       nil
     rescue StandardError, ScriptError => e
@@ -184,18 +186,16 @@ module SolidQueue
     # belongs to the preflight lock: `operational?` holds it across connecting to
     # Postgres and a self-test that waits up to two seconds, and a child that
     # inherited it locked would hang the first worker to register — permanently,
-    # inside a lifecycle hook, with no error and no output. Replacing three
-    # mutexes in a process that is still single-threaded costs nothing, and it
-    # means the gem is not relying on an interpreter implementation detail to
-    # avoid its worst failure mode.
+    # inside a lifecycle hook, with no error and no output. Replacing a mutex in
+    # a process that is still single-threaded costs nothing, and it means the
+    # gem is not relying on an interpreter implementation detail to avoid its
+    # worst failure mode.
     #
-    # Order matters: locks first, then the guards that use them. The preflight
+    # Order matters: the lock first, then the guards that use it. The preflight
     # VERDICT needs no reset (it is stamped with the pid that reached it, so a
     # child recomputes its own).
     def after_fork
       @@preflight_lock = Mutex.new
-      @@overrides_lock = Mutex.new
-      @@overrides = {}.compare_by_identity
 
       connection_provider.forget_pools! if connection_provider.respond_to?(:forget_pools!)
       Registry.after_fork!
@@ -228,7 +228,6 @@ module SolidQueue
     # preflight to run again after reconfiguring.
     def reset!
       @@preflight_lock.synchronize { @@preflight_result = nil }
-      @@overrides_lock.synchronize { @@overrides = {}.compare_by_identity }
       connection_provider.reset! if connection_provider.respond_to?(:reset!)
       nil
     end
@@ -292,6 +291,8 @@ module SolidQueue
       # all only because operational? proved notifications arrive.
       #
       # Returns the interval that was replaced, or nil when nothing changed.
+      # Deliberately does NOT instrument: the caller does, once the registry
+      # has recorded what happened here.
       def raise_polling_interval(worker)
         target = fallback_polling_interval&.to_f
         return nil if target.nil?
@@ -301,7 +302,6 @@ module SolidQueue
         return nil if current.nil? || target <= current.to_f
 
         worker.polling_interval = target
-        instrument :override_polling_interval, worker_name: worker_name(worker), from: current, to: target
         current
       end
 
@@ -313,27 +313,10 @@ module SolidQueue
         nil
       end
 
-      # Overridden intervals ---------------------------------------------------
-      #
-      # Keyed by identity: a Solid Queue worker defines no #hash or #eql?, but
-      # relying on the default object identity implicitly would be relying on
-      # something nobody wrote down.
-
-      def remember_override(worker, previous)
-        return if previous.nil?
-
-        @@overrides_lock.synchronize { @@overrides[worker] = previous }
-      end
-
-      def forget_override(worker)
-        @@overrides_lock.synchronize { @@overrides.delete(worker) }
-      end
-
-      # Puts one worker back on its own interval and wakes it, so that it
-      # re-reads the interval now rather than at the end of the sleep it is
-      # already in. Returns whether anything was actually restored.
-      def restore_override(worker)
-        previous = @@overrides_lock.synchronize { @@overrides.delete(worker) }
+      # Puts one worker back on the interval the registry remembered for it and
+      # wakes it, so that it re-reads the interval now rather than at the end of
+      # the sleep it is already in. Returns whether anything was restored.
+      def restore_override(worker, previous)
         return false if previous.nil?
 
         current = current_polling_interval(worker)

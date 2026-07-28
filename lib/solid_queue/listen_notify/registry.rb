@@ -20,7 +20,15 @@ module SolidQueue
     #   is what guarantees "at most one listener per non-empty transition" when
     #   several worker threads register concurrently.
     # * #dispatch runs on the listener thread and performs zero database work.
+    #
+    # The registry is the single owner of per-worker state: the queue snapshot
+    # used to route notifications, and the polling interval the module replaced
+    # at registration time — kept so that a listener which dies for good can
+    # hand every worker back to be put where it was found. One map, one lock,
+    # one fork-reset path.
     class Registry
+      # Everything this process knows about a registered worker.
+      Entry = Struct.new(:queues, :restore_interval)
       class << self
         # A class-level ivar rather than a constant, because the fork hook has to
         # be able to REPLACE it: fork() copies only the calling thread, and this
@@ -70,17 +78,23 @@ module SolidQueue
       def initialize(listener_factory: nil)
         @listener_factory = listener_factory || method(:build_default_listener)
         @mutex = Mutex.new
-        @workers = {}
+        @workers = empty_workers
         @listener = nil
         @pid = ::Process.pid
       end
 
-      def register(worker)
+      # `restore_interval` is the polling interval the module replaced when it
+      # raised this worker's — nil when nothing was changed. It is recorded here,
+      # with the worker, so that the crash path has one place to look.
+      def register(worker, restore_interval: nil)
         guard_fork!
 
         @mutex.synchronize do
           sweep_dead_locked
-          @workers[worker] ||= snapshot_queues(worker)
+          entry = (@workers[worker] ||= Entry.new(snapshot_queues(worker), nil))
+          # ||=, not =: a re-registration must never overwrite the interval the
+          # worker originally had with one this gem already raised.
+          entry.restore_interval ||= restore_interval
           start_listener_locked
         end
 
@@ -118,7 +132,13 @@ module SolidQueue
           next false unless @listener.equal?(listener)
 
           @listener = nil
-          stranded = @workers.keys
+          # Hand each interval over exactly once: a second crash after a revival
+          # must not "restore" workers that are already back on their own.
+          stranded = @workers.map do |worker, entry|
+            pair = [ worker, entry.restore_interval ]
+            entry.restore_interval = nil
+            pair
+          end
           true
         end
 
@@ -141,8 +161,8 @@ module SolidQueue
         skipped_saturated = 0
         unreachable = nil
 
-        pairs.each do |worker, queues|
-          next unless QueueMatcher.matches?(queues, queue_name)
+        pairs.each do |worker, entry|
+          next unless QueueMatcher.matches?(entry.queues, queue_name)
 
           if !wake_saturated && pool_saturated?(worker)
             skipped_saturated += 1
@@ -202,7 +222,7 @@ module SolidQueue
         # single-threaded here: replace it instead of trying to take it.
         @mutex = Mutex.new
         @listener = nil
-        @workers = {}
+        @workers = empty_workers
         @pid = ::Process.pid
 
         ListenNotify.instrument(:fork_detected, parent_pid: parent_pid, pid: @pid)
@@ -217,7 +237,7 @@ module SolidQueue
         listener = @mutex.synchronize do
           current = @listener
           @listener = nil
-          @workers = {}
+          @workers = empty_workers
           current
         end
 
@@ -250,7 +270,14 @@ module SolidQueue
 
         # Caller holds @mutex.
         def sweep_dead_locked
-          @workers.delete_if { |worker, _queues| !worker_alive?(worker) }
+          @workers.delete_if { |worker, _entry| !worker_alive?(worker) }
+        end
+
+        # Keyed by identity: a Solid Queue worker defines no #hash or #eql?, and
+        # relying on the default object identity implicitly would be relying on
+        # something nobody wrote down.
+        def empty_workers
+          {}.compare_by_identity
         end
 
         def reap(workers)
