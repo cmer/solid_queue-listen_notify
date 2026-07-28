@@ -1,4 +1,4 @@
-# solid_queue-listen_notify
+# Listen/Notify for Solid Queue
 
 Instant job pickup for [Solid Queue](https://github.com/rails/solid_queue) on Postgres — without the polling tax.
 
