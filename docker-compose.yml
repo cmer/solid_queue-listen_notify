@@ -1,0 +1,19 @@
+# Postgres for the integration suite. Mirrors Solid Queue's own compose file so
+# that a checkout of both behaves the same way.
+#
+# The test app reads its connection parameters from POSTGRES_HOST / POSTGRES_PORT
+# / POSTGRES_USER / POSTGRES_PASSWORD and defaults to what this file publishes,
+# so a machine that already runs Postgres can skip Docker entirely:
+#
+#   POSTGRES_PORT=5432 POSTGRES_USER=$(whoami) bundle exec rake test
+volumes:
+  db: {}
+
+services:
+  postgres:
+    image: postgres:15.1
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: "trust"
+    volumes:
+      - db:/var/lib/postgres
+    ports: [ "127.0.0.1:55432:5432" ]

@@ -1,0 +1,22 @@
+Description:
+    Generates a migration that installs the Postgres trigger used by
+    solid_queue-listen_notify. The trigger fires AFTER INSERT on
+    solid_queue_ready_executions and calls pg_notify with the queue name, which
+    wakes the workers listening on the configured channel.
+
+    The channel is baked into the migration when it is generated, from
+    SolidQueue::ListenNotify.channel (default "solid_queue_ready"). Configure the
+    channel before running the generator if you don't want the default. The
+    generated SQL is self-contained: it doesn't reference the gem, so the
+    migration keeps replaying after the gem is removed.
+
+Example:
+    bin/rails generate solid_queue:listen_notify:install
+
+    Writes db/queue_migrate/<timestamp>_install_solid_queue_listen_notify_trigger.rb
+
+    The migration goes to the migrations path of the `queue` database. Pass
+    --database (or --db) to target a different entry in config/database.yml, for
+    instance when Solid Queue shares the primary database:
+
+    bin/rails generate solid_queue:listen_notify:install --database primary

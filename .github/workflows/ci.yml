@@ -1,0 +1,117 @@
+name: Build
+on: [ push, pull_request ]
+
+jobs:
+  rubocop:
+    name: Rubocop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Ruby and install gems
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.4
+          bundler-cache: true
+          cache-version: 1
+      - name: Run rubocop
+        run: bundle exec rubocop --parallel
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Three deliberate cells instead of a full grid: the oldest supported
+        # combination, the most common production one, and the newest of
+        # everything. Intermediate Rails/Ruby versions sit strictly between the
+        # edges and haven't historically broken independently of them.
+        include:
+          - ruby-version: 3.2
+            gemfile: rails_7_1
+          - ruby-version: 3.4
+            gemfile: rails_8_1
+          - ruby-version: "4.0"
+            gemfile: rails_8_1
+    services:
+      postgres:
+        image: postgres:15.1
+        env:
+          POSTGRES_HOST_AUTH_METHOD: "trust"
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready --username postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.gemfile }}.gemfile
+      RAILS_ENV: test
+      # The published container port, and the superuser the image creates. The
+      # dummy app's database.yml reads both (see test/dummy/config/database.yml).
+      POSTGRES_PORT: 55432
+      POSTGRES_USER: postgres
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Ruby and install gems
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler-cache: true
+          cache-version: 1
+      # No db:setup step: the integration helper creates both databases and
+      # loads their schemas itself before the first test runs.
+      - name: Run tests
+        run: bundle exec rake test
+      - name: Upload logs on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.gemfile }}-ruby${{ matrix.ruby-version }}-attempt${{ github.run_attempt }}
+          path: |
+            test/dummy/log/test.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Early warning against upstream drift: the gem depends on Solid Queue APIs
+  # that are public by visibility but not all documented contract (wake_up,
+  # pool.idle?, alive?). This cell tracks solid_queue@main so a breaking change
+  # upstream shows up here before it ships in a release. Allowed to fail: it
+  # must never block a merge, only inform one.
+  solid-queue-main:
+    name: Tests (solid_queue main)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:15.1
+        env:
+          POSTGRES_HOST_AUTH_METHOD: "trust"
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready --username postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/solid_queue_main.gemfile
+      RAILS_ENV: test
+      POSTGRES_PORT: 55432
+      POSTGRES_USER: postgres
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Ruby and install gems
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+          cache-version: 1
+      - name: Run tests
+        run: bundle exec rake test

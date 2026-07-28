@@ -1,0 +1,37 @@
+# Postgres only: the gem does nothing on any other adapter, so there is nothing
+# to test on one.
+#
+# Everything is read from the environment with the docker-compose defaults, so
+# `docker compose up -d` needs no configuration and a machine with its own
+# Postgres only needs POSTGRES_PORT / POSTGRES_USER:
+#
+#   POSTGRES_PORT=5432 POSTGRES_USER=$(whoami) bundle exec rake test
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS", 20) %>
+  host: <%= ENV.fetch("POSTGRES_HOST", "127.0.0.1") %>
+  port: <%= ENV.fetch("POSTGRES_PORT", 55432) %>
+  username: <%= ENV.fetch("POSTGRES_USER", "postgres") %>
+<% unless ENV["POSTGRES_PASSWORD"].to_s.empty? %>
+  password: <%= ENV["POSTGRES_PASSWORD"] %>
+<% end %>
+  gssencmode: disable # https://github.com/ged/ruby-pg/issues/311
+
+development:
+  primary:
+    <<: *default
+    database: solid_queue_listen_notify_dummy_development
+  queue:
+    <<: *default
+    database: solid_queue_listen_notify_dummy_queue_development
+    migrations_paths: db/queue_migrate
+
+test:
+  primary:
+    <<: *default
+    database: solid_queue_listen_notify_dummy_test
+  queue:
+    <<: *default
+    database: solid_queue_listen_notify_dummy_queue_test
+    migrations_paths: db/queue_migrate

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+bundle install
+
+# The integration suite needs a Postgres it can LISTEN on. docker-compose.yml
+# publishes one on 127.0.0.1:55432, which is what test/dummy/config/database.yml
+# defaults to — but the whole connection is configurable, so a machine that
+# already runs Postgres (or has no Docker) is a matter of two environment
+# variables rather than a blocked test run.
+if [ -n "${POSTGRES_HOST:-}${POSTGRES_PORT:-}" ]; then
+  echo "Using the Postgres given by POSTGRES_HOST/POSTGRES_PORT (${POSTGRES_HOST:-127.0.0.1}:${POSTGRES_PORT:-55432})."
+elif docker compose version &> /dev/null && docker compose up -d --wait; then
+  docker compose ps
+else
+  cat <<'MESSAGE'
+
+--------------------------------------------------------------------------------
+Could not start the Postgres container.
+
+The tests do not need Docker. Point them at any Postgres you can create
+databases on:
+
+  POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5432 POSTGRES_USER=$(whoami) bin/setup
+  POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5432 POSTGRES_USER=$(whoami) bundle exec rake test
+
+(POSTGRES_PASSWORD is read too, and omitted from the configuration when empty.)
+--------------------------------------------------------------------------------
+
+MESSAGE
+  exit 1
+fi
+
+echo "Preparing the test databases..."
+cd test/dummy
+RAILS_ENV=test bin/rails db:prepare
