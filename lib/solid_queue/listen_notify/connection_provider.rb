@@ -17,6 +17,27 @@ module SolidQueue
     # Everything ActiveRecord-shaped in here is resolved inside method bodies:
     # requiring this file must not require ActiveRecord.
     class ConnectionProvider
+      # Best-effort teardown for a connection this provider handed out: nobody
+      # else can close it (it was removed from its pool), and it may already be
+      # broken, so both statements are attempted and both failures swallowed.
+      def self.release(connection, channel:)
+        return if connection.nil?
+
+        begin
+          connection.execute("UNLISTEN #{connection.quote_column_name(channel)}")
+        rescue StandardError
+          nil
+        end
+
+        begin
+          connection.disconnect!
+        rescue StandardError
+          nil
+        end
+
+        nil
+      end
+
       def initialize
         @mutex = Mutex.new
         @pools = {}
@@ -28,10 +49,6 @@ module SolidQueue
         else
           checkout_from_queue_pool
         end
-      end
-
-      def to_proc
-        method(:call).to_proc
       end
 
       # Drops the memoized isolated pools. The connections handed out so far are

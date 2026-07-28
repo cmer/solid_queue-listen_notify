@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "trigger_installer"
+require_relative "connection_provider"
 
 module SolidQueue
   module ListenNotify
@@ -176,7 +177,7 @@ module SolidQueue
             end
           ensure
             # Nobody else can: this connection was removed from its pool.
-            disconnect(connection)
+            ConnectionProvider.release(connection, channel: channel)
           end
         end
 
@@ -187,20 +188,6 @@ module SolidQueue
             connection.execute(
               "NOTIFY #{connection.quote_column_name(channel)}, #{connection.quote(SELF_TEST_PAYLOAD)}"
             )
-          end
-        end
-
-        def disconnect(connection)
-          begin
-            connection.execute("UNLISTEN #{connection.quote_column_name(channel)}")
-          rescue StandardError
-            nil
-          end
-
-          begin
-            connection.disconnect!
-          rescue StandardError
-            nil
           end
         end
 

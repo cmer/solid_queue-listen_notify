@@ -156,10 +156,6 @@ module ListenNotifyTestDoubles
       end
     end
 
-    def to_proc
-      method(:call).to_proc
-    end
-
     def calls
       @mutex.synchronize { @calls }
     end
