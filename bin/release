@@ -19,7 +19,7 @@ VERSION_FILE = File.join(ROOT, "lib/solid_queue/listen_notify/version.rb")
 CHANGELOG = File.join(ROOT, "CHANGELOG.md")
 
 def abort!(message)
-  warn "\e[31mERROR:\e[0m #{message}"
+  $stderr.puts "\e[31mERROR:\e[0m #{message}"
   exit 1
 end
 
