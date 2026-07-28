@@ -56,4 +56,4 @@ The listener's connection is invisible to ActiveRecord's post-fork `discard_pool
 
 ## Reference
 
-`docs/REFERENCE.md` documents every config option, log line, instrumentation payload, and failure mode — keep it (and the README's small config table) in sync with code when changing defaults or behavior. A local read-only checkout of solid_queue v1.5.0 typically lives at `../solid_queue` for cross-referencing upstream internals.
+`docs/REFERENCE.md` documents every config option, log line, instrumentation payload, and failure mode — keep it (and the README's small config table) in sync with code when changing defaults or behavior. Maintain `CHANGELOG.md` for user-visible changes — brief and simple: one line per change, no essays. `prompts/install.md` and `prompts/uninstall.md` are agent-executable instructions fetched via raw GitHub URLs from the README; update them when the install/uninstall flow or defaults change. A local read-only checkout of solid_queue v1.5.0 typically lives at `../solid_queue` for cross-referencing upstream internals.

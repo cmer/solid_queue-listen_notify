@@ -1,0 +1,198 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Release script for solid_queue-listen_notify.
+#
+# Usage: bin/release [VERSION] [--yes] [--skip-bundle] [--llm claude|codex]
+#
+# Prompts for the version if not given. Moves the CHANGELOG's Unreleased
+# entries under the new version with today's date (delegated to `claude -p`,
+# falling back to `codex exec`, then verified deterministically), bumps
+# version.rb, refreshes Gemfile.lock, commits and tags. Pushing is left to you.
+
+require "date"
+require "open3"
+require "tempfile"
+
+ROOT = File.expand_path("..", __dir__)
+VERSION_FILE = File.join(ROOT, "lib/solid_queue/listen_notify/version.rb")
+CHANGELOG = File.join(ROOT, "CHANGELOG.md")
+
+def abort!(message)
+  warn "\e[31mERROR:\e[0m #{message}"
+  exit 1
+end
+
+def step(message)
+  puts "\e[36m==>\e[0m #{message}"
+end
+
+def run!(*cmd, chdir: ROOT)
+  out, status = Open3.capture2e(*cmd, chdir: chdir)
+  abort! "`#{cmd.join(" ")}` failed:\n#{out}" unless status.success?
+  out
+end
+
+options = { yes: false, skip_bundle: false, llm: nil }
+args = ARGV.dup
+version_arg = nil
+until args.empty?
+  case (arg = args.shift)
+  when "--yes" then options[:yes] = true
+  when "--skip-bundle" then options[:skip_bundle] = true
+  when "--llm" then options[:llm] = args.shift or abort!("--llm requires a value (claude or codex)")
+  when /\A-/ then abort! "Unknown option #{arg}"
+  else
+    abort! "Unexpected argument #{arg} (version already given as #{version_arg})" if version_arg
+    version_arg = arg
+  end
+end
+
+current_version = File.read(VERSION_FILE)[/VERSION = "([^"]+)"/, 1] or
+  abort! "Could not find VERSION in #{VERSION_FILE}"
+
+# --- Pick the version ---------------------------------------------------------
+
+new_version = version_arg
+unless new_version
+  suggestion = current_version.split(".").then { |p| [ *p[0..-2], p[-1].to_i + 1 ].join(".") }
+  print "Current version is #{current_version}. New version [#{suggestion}]: "
+  input = $stdin.gets&.strip
+  new_version = input.nil? || input.empty? ? suggestion : input
+end
+
+abort! "Version #{new_version.inspect} is not X.Y.Z semver" unless new_version.match?(/\A\d+\.\d+\.\d+\z/)
+abort! "New version #{new_version} must be greater than current #{current_version}" unless
+  Gem::Version.new(new_version) > Gem::Version.new(current_version)
+
+tag = "v#{new_version}"
+today = Date.today.strftime("%Y-%m-%d")
+
+# --- Preflight ----------------------------------------------------------------
+
+step "Preflight checks"
+
+abort! "Working tree is dirty — commit or stash first:\n#{run!("git", "status", "--short")}" unless
+  run!("git", "status", "--porcelain").strip.empty?
+
+branch = run!("git", "rev-parse", "--abbrev-ref", "HEAD").strip
+abort! "Releases must be cut from main (you are on #{branch})" unless branch == "main"
+
+abort! "Tag #{tag} already exists" if system("git", "rev-parse", "-q", "--verify", "refs/tags/#{tag}",
+                                             out: File::NULL, err: File::NULL, chdir: ROOT)
+
+changelog = File.read(CHANGELOG)
+abort! "CHANGELOG.md has no ## [Unreleased] section" unless changelog.include?("## [Unreleased]")
+unreleased_body = changelog[/^## \[Unreleased\]\n(.*?)(?=^## \[|^\[)/m, 1].to_s
+abort! "The Unreleased section of CHANGELOG.md is empty — nothing to release" if unreleased_body.strip.empty?
+
+# --- Rewrite the changelog with an LLM, then verify it ourselves --------------
+
+llm = options[:llm] || %w[claude codex].find { |cmd| system("command -v #{cmd} > /dev/null 2>&1") }
+abort! "Neither `claude` nor `codex` CLI found on PATH. Install one, or pass --llm." unless llm
+
+prompt = <<~PROMPT
+  You are updating a Keep a Changelog CHANGELOG.md for a gem release.
+
+  Perform exactly these edits:
+  1. Rename the "## [Unreleased]" section header to "## [#{new_version}] - #{today}".
+     Keep every line of that section's content verbatim — do not reword, rewrap,
+     reorder, merge, or drop anything.
+  2. Insert a fresh, empty "## [Unreleased]" section (header only, followed by a
+     blank line) directly above the new "## [#{new_version}]" section.
+  3. In the link references at the bottom of the file:
+     - Update the [Unreleased] link to compare v#{new_version}...HEAD.
+     - Add a [#{new_version}] link comparing v#{current_version}...v#{new_version},
+       directly below the [Unreleased] link.
+  4. Change nothing else anywhere in the file.
+
+  Output ONLY the complete updated file content. No commentary, no code fences.
+
+  The file follows this line:
+  #{changelog}
+PROMPT
+
+step "Rewriting CHANGELOG.md with #{llm}"
+
+new_changelog =
+  case llm
+  when "claude"
+    out, err, status = Open3.capture3("claude", "-p", prompt, chdir: ROOT)
+    abort! "`claude -p` failed:\n#{err}" unless status.success?
+    out
+  when "codex"
+    Tempfile.create("changelog-out") do |out|
+      run!("codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only",
+           "--output-last-message", out.path, prompt)
+      File.read(out.path)
+    end
+  else
+    abort! "Unknown --llm #{llm} (expected claude or codex)"
+  end
+new_changelog = new_changelog.strip + "\n"
+
+step "Verifying the rewritten changelog"
+
+problems = []
+problems << "missing \"## [#{new_version}] - #{today}\" header" unless
+  new_changelog.include?("## [#{new_version}] - #{today}")
+problems << "missing fresh ## [Unreleased] section" unless new_changelog.include?("## [Unreleased]")
+new_unreleased = new_changelog[/^## \[Unreleased\]\n(.*?)(?=^## \[|^\[)/m, 1].to_s
+problems << "the new Unreleased section is not empty" unless new_unreleased.strip.empty?
+problems << "the [Unreleased] link was not repointed at v#{new_version}...HEAD" unless
+  new_changelog.match?(/^\[Unreleased\]: \S+\/compare\/v#{Regexp.escape(new_version)}\.\.\.HEAD$/)
+problems << "missing [#{new_version}] compare link (v#{current_version}...v#{new_version})" unless
+  new_changelog.match?(/^\[#{Regexp.escape(new_version)}\]: \S+\/compare\/v#{Regexp.escape(current_version)}\.\.\.v#{Regexp.escape(new_version)}$/)
+
+lost = changelog.lines.map(&:chomp).reject { |l| l.strip.empty? || l.start_with?("[Unreleased]:") }
+                .reject { |l| new_changelog.include?(l) }
+problems << "these original lines went missing:\n  #{lost.join("\n  ")}" unless lost.empty?
+
+unless problems.empty?
+  rejected = File.join(ROOT, "CHANGELOG.md.rejected")
+  File.write(rejected, new_changelog)
+  abort! "#{llm} produced a bad changelog (original left untouched, output saved to #{rejected}):\n" \
+         "- #{problems.join("\n- ")}"
+end
+
+File.write(CHANGELOG, new_changelog)
+
+# --- Bump the version and lockfile --------------------------------------------
+
+step "Bumping version.rb to #{new_version}"
+version_rb = File.read(VERSION_FILE)
+bumped = version_rb.sub(/VERSION = "#{Regexp.escape(current_version)}"/, %(VERSION = "#{new_version}"))
+abort! "Failed to substitute version in #{VERSION_FILE}" if bumped == version_rb
+File.write(VERSION_FILE, bumped)
+
+if options[:skip_bundle]
+  step "Skipping bundle install (--skip-bundle)"
+else
+  step "Refreshing Gemfile.lock"
+  run!("bundle", "install", "--quiet")
+end
+
+# --- Review, commit, tag ------------------------------------------------------
+
+puts
+puts run!("git", "diff", "--stat")
+puts run!("git", "diff")
+
+unless options[:yes]
+  print "Commit and tag #{tag}? [y/N] "
+  unless $stdin.gets&.strip&.downcase&.start_with?("y")
+    run!("git", "checkout", "--", ".")
+    abort! "Aborted — all changes reverted."
+  end
+end
+
+step "Committing and tagging #{tag}"
+run!("git", "add", "-A")
+run!("git", "commit", "-m", "Release #{tag}")
+run!("git", "tag", "-a", tag, "-m", "Release #{tag}")
+
+puts
+puts "\e[32mDone.\e[0m Released #{tag} locally. To publish:"
+puts
+puts "  git push origin main --follow-tags"
+puts "  bundle exec rake release   # builds the gem and pushes to RubyGems"

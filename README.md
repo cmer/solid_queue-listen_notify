@@ -17,17 +17,20 @@ PostgreSQL 12+ (for the queue database only), Solid Queue 1.5+, Rails 7.1+, Ruby
 
 ## Installation
 
-```bash
-bundle add solid_queue-listen_notify
-bin/rails generate solid_queue:listen_notify:install --database queue
-bin/rails db:migrate
+**With an AI agent** — paste this into Claude Code, Cursor, or any coding agent, from your application's root. It checks the prerequisites (Solid Queue installed, Postgres), installs, and verifies notifications actually flow:
+
+```
+Fetch https://raw.githubusercontent.com/cmer/solid_queue-listen_notify/main/prompts/install.md
+and follow its instructions to install solid_queue-listen_notify in this application.
 ```
 
-Then run `bin/jobs` as before. There is nothing to start: the gem hooks into Solid Queue's worker lifecycle, verifies at boot that notifications actually get delivered, and only then raises the workers' polling interval (0.1 s → 10 s by default).
+**By hand:**
 
-The `--database` option names the `config/database.yml` entry Solid Queue uses — `queue` is Solid Queue's own default. If your jobs live in the primary database, use `--database primary`.
+```bash
+bundle add solid_queue-listen_notify
+```
 
-The migration is a formality: the gem also reinstalls the trigger by itself at boot whenever it's missing (`schema.rb` doesn't dump triggers, so a fresh `db:schema:load` database would otherwise lack it). If your database user isn't allowed to create functions and triggers, the migration is the way — and set `auto_install_trigger = false` to silence the attempt.
+That's it. Run `bin/jobs` as before: the gem installs its database trigger automatically at first boot, verifies that notifications actually get delivered, and only then raises the workers' polling interval (0.1 s → 10 s by default). If your workers' database user can't `CREATE FUNCTION`/`CREATE TRIGGER`, install the trigger with a migration instead: `bin/rails generate solid_queue:listen_notify:install --database queue && bin/rails db:migrate`, and set `auto_install_trigger = false`.
 
 ## How it works
 
@@ -56,7 +59,15 @@ Set them in an initializer as above, or via `config.solid_queue_listen_notify.*`
 
 ## Uninstalling
 
-Remove the gem, lower `polling_interval` in `config/queue.yml` back to your liking, and (optionally) drop the trigger:
+**With an AI agent:**
+
+```
+Fetch https://raw.githubusercontent.com/cmer/solid_queue-listen_notify/main/prompts/uninstall.md
+and follow its instructions to cleanly remove solid_queue-listen_notify from this application,
+including a migration that drops the database trigger.
+```
+
+**By hand:** remove the gem, lower `polling_interval` in `config/queue.yml` back to your liking, and (optionally) drop the trigger:
 
 ```sql
 DROP TRIGGER IF EXISTS solid_queue_listen_notify ON solid_queue_ready_executions;

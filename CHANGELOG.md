@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Agent-executable install/uninstall prompts in `prompts/`, linked from the README.
+
 ### Pre-release hardening
 
 Everything below landed before 0.1.0 shipped, from an adversarial review of the
