@@ -1,6 +1,6 @@
-# Listen/Notify for Solid Queue
+# LISTEN/NOTIFY for Solid Queue
 
-Instant job pickup for [Solid Queue](https://github.com/rails/solid_queue) on Postgres — without the polling tax.
+Instant job pickup for [Solid Queue](https://github.com/rails/solid_queue) on Postgresql — without the polling tax.
 
 Out of the box, every Solid Queue worker polls the database for work every 0.1 seconds, forever, whether or not there is anything to do. This gem replaces the waiting with Postgres's native LISTEN/NOTIFY: a database trigger announces the moment a job becomes ready, and workers wake instantly instead of polling for it.
 
