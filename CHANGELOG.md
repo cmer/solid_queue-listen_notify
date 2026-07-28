@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A raising `ActiveSupport::Notifications` subscriber can no longer strand a worker at the raised polling interval mid-registration, or run between a notification and the worker wake-ups it triggers.
+
+### Changed
+
+- Internal: the registry is now the single owner of per-worker state (queue snapshot and replaced polling interval); the `notify` event's duration no longer includes the dispatch itself (payload unchanged).
+
 ## [0.5.1] - 2026-07-28
 
 ### Fixed
