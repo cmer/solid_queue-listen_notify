@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "connection_provider"
+
 module SolidQueue
   module ListenNotify
     # One background thread owning one dedicated Postgres connection: LISTENs on
@@ -220,24 +222,18 @@ module SolidQueue
           end
         end
 
+        # Dispatches first, instruments after: the ordering is what guarantees
+        # that no notifications subscriber — however it subscribed — can stand
+        # between a notification and the wake-ups it owes.
         def handle_notification(payload)
           @consecutive_failures = 0
           queue_name = payload.to_s
-          dispatched = false
 
-          instrument(:notify, queue_name: queue_name) do |event|
-            dispatched = true
-            counts = registry.dispatch(queue_name)
-            event.merge!(counts) if counts.is_a?(Hash)
-          end
+          counts = registry.dispatch(queue_name)
 
-          # ActiveSupport runs a plain `subscribe` block AFTER the instrumented
-          # block, so a subscriber that raises has not stopped the fan-out above
-          # from happening. The rarer `subscribe(name, object_responding_to_start)`
-          # form does run before it, though, and a notification dropped because
-          # somebody's metrics object raised would be a job left waiting for the
-          # next poll.
-          registry.dispatch(queue_name) unless dispatched
+          event_payload = { queue_name: queue_name }
+          event_payload.merge!(counts) if counts.is_a?(Hash)
+          instrument(:notify, **event_payload)
         end
 
         def tick_keepalive
@@ -319,24 +315,10 @@ module SolidQueue
           nil
         end
 
-        # Best effort on both statements: this runs on connections we already
-        # know may be broken.
         def safe_disconnect
           connection = @connection
           @connection = nil
-          return if connection.nil?
-
-          begin
-            connection.execute("UNLISTEN #{connection.quote_column_name(channel)}")
-          rescue StandardError
-            nil
-          end
-
-          begin
-            connection.disconnect!
-          rescue StandardError
-            nil
-          end
+          ConnectionProvider.release(connection, channel: channel)
         end
 
         # Sleeps in wait_timeout-sized slices so that #stop is never delayed by
