@@ -33,19 +33,36 @@ class PreflightIntegrationTest < IntegrationTestCase
     assert_equal 1, events.size
   end
 
-  test "a missing trigger is not operational and says so loudly" do
+  test "a missing trigger with auto-install disabled is not operational and says so loudly" do
+    with_listen_notify_config(auto_install_trigger: false) do
+      uninstall_trigger!
+      SolidQueue::ListenNotify.reset!
+
+      result = nil
+      log = capture_listen_notify_log do
+        result = capture_listen_notify_events(:preflight) { assert_not SolidQueue::ListenNotify.operational? }.last
+      end
+
+      assert_equal :trigger_missing, result.payload[:reason]
+      assert_includes log, "the notification trigger is missing from"
+      assert_includes log, "bin/rails generate solid_queue:listen_notify:install --database queue"
+      assert_includes log, "=" * 78
+    end
+  ensure
+    install_trigger!
+    SolidQueue::ListenNotify.reset!
+  end
+
+  test "a missing trigger is reinstalled by default and the gem comes up operational" do
     uninstall_trigger!
     SolidQueue::ListenNotify.reset!
 
-    result = nil
-    log = capture_listen_notify_log do
-      result = capture_listen_notify_events(:preflight) { assert_not SolidQueue::ListenNotify.operational? }.last
+    events = capture_listen_notify_events(:install_trigger) do
+      assert SolidQueue::ListenNotify.operational?
     end
 
-    assert_equal :trigger_missing, result.payload[:reason]
-    assert_includes log, "the notification trigger is missing from"
-    assert_includes log, "bin/rails generate solid_queue:listen_notify:install --database queue"
-    assert_includes log, "=" * 78
+    assert_equal 1, events.size
+    assert trigger_installed?
   ensure
     install_trigger!
     SolidQueue::ListenNotify.reset!

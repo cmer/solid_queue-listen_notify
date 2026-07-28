@@ -48,7 +48,7 @@ Set options either through the Railtie, in `config/application.rb` or an environ
 
 ```ruby
 config.solid_queue_listen_notify.fallback_polling_interval = 30.seconds
-config.solid_queue_listen_notify.auto_install_trigger = true
+config.solid_queue_listen_notify.keepalive_interval = 15.seconds
 ```
 
 ...or directly on the module, from an initializer:
@@ -56,7 +56,7 @@ config.solid_queue_listen_notify.auto_install_trigger = true
 ```ruby
 # config/initializers/solid_queue_listen_notify.rb
 SolidQueue::ListenNotify.fallback_polling_interval = 30.seconds
-SolidQueue::ListenNotify.auto_install_trigger = true
+SolidQueue::ListenNotify.keepalive_interval = 15.seconds
 ```
 
 The two are equivalent — `config.solid_queue_listen_notify` is copied onto the module by an initializer. An unknown option name is logged as a warning and ignored rather than raising; a typo in an optional optimization shouldn't stop an app from booting.
@@ -67,7 +67,7 @@ The two are equivalent — `config.solid_queue_listen_notify` is copied onto the
 | `channel` | `"solid_queue_ready"` | The `pg_notify` channel. Must be **1 to 63 bytes** — Postgres's identifier limit — and must match what the installed trigger notifies on. The preflight checks the length before it opens a connection, and looks in the trigger's function body for the exact `pg_notify('<channel>', NEW.queue_name)` call to detect drift. |
 | `fallback_polling_interval` | `10.seconds` | The polling interval workers are raised to once notifications are proven to work. **Only ever raises**: a worker already configured to poll every 30 seconds keeps its 30 seconds, and a worker at 0.1 goes to 10. Set to `nil` to never touch any worker's interval. Applied only when the gem is operational, and put back if registration then fails. |
 | `listen_database` | `nil` | Name of a `config/database.yml` entry to open the listener connection against, instead of Solid Queue's own pool. This is the PgBouncer escape hatch: point it at an entry that connects **directly** to Postgres. It must name **the same database** as the queue database — only the connection route may differ — and the preflight's self-test fails if it doesn't. It gets a private connection handler, so it never mixes with your application's pools. |
-| `auto_install_trigger` | `false` | When the preflight finds the trigger missing, install it there and then. Idempotent, but it needs a database user allowed to create functions and triggers, and a failure is treated as "still missing" (you get the install instructions, not a stack trace). The cure for the [schema.rb trap](#schemarb-does-not-dump-triggers). |
+| `auto_install_trigger` | `true` | When the preflight finds the trigger missing, install it there and then. Idempotent, and the cure for the [schema.rb trap](#schemarb-does-not-dump-triggers), which is why it is on by default. Needs a database user allowed to create functions and triggers; a failure is treated as "still missing" (you get the install instructions, not a stack trace). Set to `false` if your worker's database user must not have DDL privileges — then run the generator's migration instead. |
 | `wake_saturated_workers` | `false` | By default a worker whose thread pool has no idle thread is skipped: it has nothing to do with the wake-up, and its pool's own `on_idle` hook plus polling cover the race. Set to `true` to wake it anyway. |
 | `wait_timeout` | `1.second` | How long each `wait_for_notify` call blocks before looping. Also the granularity at which the listener notices it has been asked to stop, and (times two, plus one) the join timeout on shutdown — which is what keeps it inside Solid Queue's 5-second shutdown timeout. |
 | `keepalive_interval` | `10.seconds` | How often the listener runs `SELECT 1` on its connection, to notice a silently dropped connection and to keep idle-connection reapers away. Each tick also sweeps workers that went away without a stop hook. |
@@ -124,7 +124,7 @@ The table below is the whole safety story. In every row the outcome is "stock So
 
 | Situation | What the gem does |
 |---|---|
-| **Trigger missing** | Preflight fails with `:trigger_missing` and prints a banner with the exact generator command. Not operational, polling intervals untouched. With `auto_install_trigger = true` it tries to install the trigger first, and only reports missing if that fails too (the failure is included in the banner). |
+| **Trigger missing** | The preflight installs it on the spot (`auto_install_trigger` is on by default) and carries on. Only when that fails — no DDL privilege — or when auto-install was turned off does it fail with `:trigger_missing` and print a banner with the exact generator command (and the install failure, when there was one). Not operational in that case, polling intervals untouched. |
 | **Non-Postgres adapter** | Detected from the queue pool's configuration, without opening a connection at all. An adapter that *is* named Postgres but whose raw connection can't `wait_for_notify` is caught right after. Either way, a prominent banner names the adapter it found and tells you to remove the gem or move the queue database to Postgres. Not operational. |
 | **Postgres down at boot** | Every branch of the preflight is rescued: the exception becomes an `:error` verdict with its class and message in the payload. `bin/jobs` starts normally and workers poll. The verdict is per-process and memoized, so a database that comes back later is picked up by the next process, not this one. |
 | **Connection drops mid-run** | The listener catches `PG::Error`, `ActiveRecord::ConnectionNotEstablished`, `ActiveRecord::ConnectionFailed`, `ActiveRecord::StatementInvalid`, `IOError`, `EOFError`, `Errno::EPIPE` and `Errno::ECONNRESET`, disconnects, waits `reconnect_wait`, and reconnects — indefinitely. The first failures are `WARN`-level only; after `connection_errors_reporting_threshold` consecutive ones they escalate to `ERROR` and go to `SolidQueue.on_thread_error`. Meanwhile polling still runs the jobs. |
@@ -144,13 +144,11 @@ The table below is the whole safety story. In every row the outcome is "stock So
 
 ### schema.rb does not dump triggers
 
-This is the trap most likely to bite you. `ActiveRecord::Base.schema_format = :ruby` — the default — dumps tables, indexes and columns, and **not** triggers. So a database created with `db:schema:load` (a fresh CI database, a new developer's machine, a restored staging environment) has the table but not the trigger, and the gem correctly refuses to activate. There are three ways out, in increasing order of how much you have to remember:
+`ActiveRecord::Base.schema_format = :ruby` — the default — dumps tables, indexes and columns, and **not** triggers. So a database created with `db:schema:load` (a fresh CI database, a new developer's machine, a restored staging environment) has the table but not the trigger.
 
-1. Set `auto_install_trigger = true` and let the preflight put the trigger back whenever it is missing. This is the recommended option, and it needs a database user allowed to `CREATE FUNCTION` and `CREATE TRIGGER`.
-2. Use `schema_format = :sql` for the queue database, so `structure.sql` carries the trigger. Rails 8.0 and later accept a per-entry `schema_format: sql` in `config/database.yml`; on 7.1 and 7.2 it is `ActiveRecord.schema_format` for the whole application or nothing.
-3. Run migrations rather than loading the schema on every fresh environment.
+This is why `auto_install_trigger` is **on by default**: the preflight simply puts the trigger back whenever it is missing, and the trap never fires. It needs a database user allowed to `CREATE FUNCTION` and `CREATE TRIGGER`. If yours must not have DDL privileges, set it to `false` and either use `schema_format = :sql` for the queue database so `structure.sql` carries the trigger (Rails 8.0+ accepts a per-entry `schema_format: sql` in `config/database.yml`; on 7.1/7.2 it is `ActiveRecord.schema_format` for the whole application or nothing), or run migrations rather than loading the schema on fresh environments.
 
-Either way, the failure is loud: a database without the trigger produces the `:trigger_missing` banner when a worker process starts, not silence.
+Either way, the failure is loud: a database without the trigger and no way to install it produces the `:trigger_missing` banner when a worker process starts, not silence.
 
 ### PgBouncer and other transaction-mode poolers
 

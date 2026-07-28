@@ -9,6 +9,10 @@ require "integration_helper"
 # would be strictly worse than not installing the gem.
 class DegradationTest < IntegrationTestCase
   test "with the trigger dropped, workers keep their own polling interval and still run jobs" do
+    # Auto-install (the default) would just put the trigger back; this test is
+    # about the world where it can't or was turned off.
+    SolidQueue::ListenNotify.auto_install_trigger = false
+
     uninstall_trigger!
     SolidQueue::ListenNotify.reset!
 
@@ -37,6 +41,7 @@ class DegradationTest < IntegrationTestCase
 
     puts format("\n  degraded (polling only) latency: %.3fs", latency)
   ensure
+    SolidQueue::ListenNotify.auto_install_trigger = true
     install_trigger!
     SolidQueue::ListenNotify.reset!
   end

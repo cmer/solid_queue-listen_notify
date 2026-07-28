@@ -27,14 +27,7 @@ Then run `bin/jobs` as before. There is nothing to start: the gem hooks into Sol
 
 The `--database` option names the `config/database.yml` entry Solid Queue uses — `queue` is Solid Queue's own default. If your jobs live in the primary database, use `--database primary`.
 
-**Recommended:** also set
-
-```ruby
-# config/initializers/solid_queue_listen_notify.rb
-SolidQueue::ListenNotify.auto_install_trigger = true
-```
-
-because `schema.rb` does not dump triggers — a fresh database created with `db:schema:load` (CI, a new machine) would otherwise come up without it. With this on, the gem reinstalls the trigger whenever it's missing (requires DDL privileges).
+The migration is a formality: the gem also reinstalls the trigger by itself at boot whenever it's missing (`schema.rb` doesn't dump triggers, so a fresh `db:schema:load` database would otherwise lack it). If your database user isn't allowed to create functions and triggers, the migration is the way — and set `auto_install_trigger = false` to silence the attempt.
 
 ## How it works
 
@@ -49,7 +42,6 @@ The defaults are right for most apps. The options you're most likely to touch:
 | Option | Default | What it does |
 |---|---|---|
 | `fallback_polling_interval` | `10.seconds` | What workers' `polling_interval` is raised to once notifications are verified. Only ever raises; `nil` to leave intervals alone. |
-| `auto_install_trigger` | `false` | Reinstall the trigger at boot if it's missing (see above — recommended). |
 | `listen_database` | `nil` | A `database.yml` entry that connects **directly** to Postgres, for apps behind PgBouncer in transaction mode (which silently breaks `LISTEN` — the gem detects this at boot and tells you). |
 | `enabled` | `true` | Kill switch; also `SOLID_QUEUE_LISTEN_NOTIFY_ENABLED=false` in the environment, no deploy needed. |
 

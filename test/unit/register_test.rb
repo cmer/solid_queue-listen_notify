@@ -372,7 +372,7 @@ class RegisterTest < Minitest::Test
   def test_apply_configuration_copies_only_the_options_that_were_set
     options = ActiveSupport::OrderedOptions.new
     options.channel = "other_channel"
-    options.auto_install_trigger = true
+    options.auto_install_trigger = false
 
     previous_fallback = LN.fallback_polling_interval
 
@@ -380,7 +380,8 @@ class RegisterTest < Minitest::Test
       LN.apply_configuration(options)
 
       assert_equal "other_channel", LN.channel
-      assert_equal true, LN.auto_install_trigger
+      # false is not the default, so this proves the copy actually happened.
+      assert_equal false, LN.auto_install_trigger
       assert_equal previous_fallback, LN.fallback_polling_interval
     end
   end

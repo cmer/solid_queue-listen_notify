@@ -166,30 +166,31 @@ class PreflightTest < Minitest::Test
     assert_includes log, "solid_queue-listen_notify requires PostgreSQL"
   end
 
-  def test_a_missing_trigger_is_reported_with_the_exact_fix
+  def test_a_missing_trigger_with_auto_install_disabled_is_reported_with_the_exact_fix
     installer = FakeInstaller.new(installed: false)
     result = nil
-    log = capture_listen_notify_log { result = build_preflight(installer: installer).run }
+    log = nil
+
+    with_listen_notify_config(auto_install_trigger: false) do
+      log = capture_listen_notify_log { result = build_preflight(installer: installer).run }
+    end
 
     refute result.operational?
     assert_equal :trigger_missing, result.reason
-    assert_equal 0, installer.installs, "auto_install_trigger is off by default"
+    assert_equal 0, installer.installs, "auto_install_trigger was explicitly disabled"
 
     assert_includes log, "WARN"
     assert_includes log, "bin/rails generate solid_queue:listen_notify:install --database queue && bin/rails db:migrate"
-    assert_includes log, "auto_install_trigger = true"
+    assert_includes log, "auto_install_trigger"
   end
 
-  def test_auto_install_installs_the_trigger_and_the_preflight_passes
+  def test_a_missing_trigger_is_installed_by_default_and_the_preflight_passes
     installer = FakeInstaller.new(installed: false)
-    result = nil
 
-    with_listen_notify_config(auto_install_trigger: true) do
-      result = build_preflight(installer: installer).run
-    end
+    result = build_preflight(installer: installer).run
 
     assert result.operational?
-    assert_equal 1, installer.installs
+    assert_equal 1, installer.installs, "auto_install_trigger is on by default"
   end
 
   def test_an_install_that_is_not_allowed_degrades_to_a_missing_trigger

@@ -17,7 +17,7 @@ class ConfigurationTest < Minitest::Test
     assert_equal "solid_queue_ready", config.channel
     assert_equal 10.seconds, config.fallback_polling_interval
     assert_nil config.listen_database
-    assert_equal false, config.auto_install_trigger
+    assert_equal true, config.auto_install_trigger
     assert_equal false, config.wake_saturated_workers
     assert_equal 1.second, config.wait_timeout
     assert_equal 10.seconds, config.keepalive_interval

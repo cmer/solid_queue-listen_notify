@@ -253,8 +253,8 @@ module SolidQueue
             "",
             "  #{INSTALL_COMMAND}",
             "",
-            "or set `SolidQueue::ListenNotify.auto_install_trigger = true` to have it installed",
-            "automatically (needs a database user allowed to create functions and triggers)."
+            "or leave `auto_install_trigger` on (it is the default) and give the database user",
+            "permission to create functions and triggers, so the gem installs it by itself."
           ]
           lines += [ "", "The last automatic install attempt failed with: #{formatted_error(@install_error)}" ] if @install_error
 

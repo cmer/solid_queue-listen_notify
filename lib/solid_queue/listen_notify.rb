@@ -31,7 +31,12 @@ module SolidQueue
     mattr_accessor :fallback_polling_interval, default: 10.seconds
 
     mattr_accessor :listen_database
-    mattr_accessor :auto_install_trigger, default: false
+    # Installing the trigger at boot whenever it is missing is the default
+    # because schema.rb does not dump triggers: without this, every database
+    # created with db:schema:load would silently lack it. Needs a database user
+    # allowed to CREATE FUNCTION / CREATE TRIGGER; a failed install degrades to
+    # the :trigger_missing banner, never a crash.
+    mattr_accessor :auto_install_trigger, default: true
     mattr_accessor :wake_saturated_workers, default: false
 
     mattr_accessor :wait_timeout, default: 1.second
