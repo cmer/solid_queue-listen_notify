@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `SOLID_QUEUE_LISTEN_NOTIFY_ENABLED=false` now disables the gem even when the application sets `enabled` explicitly. It previously only seeded the default, so an app configuring `enabled` at all silently lost the environment kill switch.
+
 ## [0.5.0] - 2026-07-27
 
 ### First official release

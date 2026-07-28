@@ -46,7 +46,7 @@ The defaults are right for most apps. The options you're most likely to touch:
 |---|---|---|
 | `fallback_polling_interval` | `10.seconds` | What workers' `polling_interval` is raised to once notifications are verified. Only ever raises; `nil` to leave intervals alone. |
 | `listen_database` | `nil` | A `database.yml` entry that connects **directly** to Postgres, for apps behind PgBouncer in transaction mode (which silently breaks `LISTEN` — the gem detects this at boot and tells you). |
-| `enabled` | `true` | Kill switch; also `SOLID_QUEUE_LISTEN_NOTIFY_ENABLED=false` in the environment, no deploy needed. |
+| `enabled` | `true` | Kill switch; also `SOLID_QUEUE_LISTEN_NOTIFY_ENABLED=false` in the environment, no deploy needed — that one wins over whatever is configured here. |
 
 Set them in an initializer as above, or via `config.solid_queue_listen_notify.*` in your Rails config. The full list of options, log output, instrumentation events, and the complete failure-mode reference live in [docs/REFERENCE.md](docs/REFERENCE.md).
 

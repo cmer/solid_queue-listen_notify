@@ -23,6 +23,10 @@ module SolidQueue
     # files, is spelled `::Process` for that reason.
     extend self
 
+    # Seeds the default for applications that never set `enabled` themselves.
+    # An application that does set it wins here — but not in `enabled?`, which
+    # re-reads the variable so that it works as an emergency kill switch either
+    # way. See the comment there.
     mattr_accessor :enabled, default: ENV.fetch("SOLID_QUEUE_LISTEN_NOTIFY_ENABLED", "true") != "false"
 
     mattr_accessor :channel, default: "solid_queue_ready"
@@ -62,7 +66,15 @@ module SolidQueue
     @@overrides_lock = Mutex.new
     @@overrides = {}.compare_by_identity
 
+    # `SOLID_QUEUE_LISTEN_NOTIFY_ENABLED=false` is documented as a kill switch
+    # that needs no deploy, and an application that sets `enabled` explicitly —
+    # to either value — would otherwise overwrite the mattr default and take
+    # that switch away. So it is checked here too, and it only ever turns the
+    # gem OFF: the variable can never enable the gem against a configuration
+    # that disabled it.
     def enabled?
+      return false if ENV["SOLID_QUEUE_LISTEN_NOTIFY_ENABLED"] == "false"
+
       enabled
     end
 

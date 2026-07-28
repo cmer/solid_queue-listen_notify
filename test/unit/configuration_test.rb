@@ -54,6 +54,35 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
+  # The switch has to survive an application that sets `enabled` explicitly —
+  # which overwrites the mattr default the variable seeded, and would otherwise
+  # make `SOLID_QUEUE_LISTEN_NOTIFY_ENABLED=false` do nothing at all.
+  def test_the_env_kill_switch_overrides_an_explicit_configuration
+    with_env(ENV_KEY, "false") do
+      with_listen_notify_config(enabled: true) do
+        refute SolidQueue::ListenNotify.enabled?
+      end
+    end
+  end
+
+  def test_the_env_variable_never_enables_the_gem_against_the_configuration
+    with_env(ENV_KEY, "true") do
+      with_listen_notify_config(enabled: false) do
+        refute SolidQueue::ListenNotify.enabled?
+      end
+    end
+  end
+
+  def test_only_the_literal_string_false_overrides_the_configuration
+    [ "0", "no", "off", "" ].each do |value|
+      with_env(ENV_KEY, value) do
+        with_listen_notify_config(enabled: true) do
+          assert SolidQueue::ListenNotify.enabled?, "#{value.inspect} should not have disabled the gem"
+        end
+      end
+    end
+  end
+
   def test_configuration_is_writable
     with_listen_notify_config(channel: "other_channel", fallback_polling_interval: nil) do
       assert_equal "other_channel", SolidQueue::ListenNotify.channel
@@ -149,8 +178,16 @@ class ConfigurationTest < Minitest::Test
   end
 
   private
+    def with_env(key, value)
+      previous = ENV[key]
+      ENV[key] = value
+      yield
+    ensure
+      ENV[key] = previous
+    end
+
     # `enabled`'s default is computed when the module is loaded, so the only
-    # honest way to exercise the env kill switch is to reload it.
+    # honest way to exercise the default the env variable seeds is to reload it.
     def enabled_with_env(value)
       previous_env = ENV[ENV_KEY]
       previous_config = CONFIG_KEYS.to_h { |key| [ key, SolidQueue::ListenNotify.class_variable_get(:"@@#{key}") ] }
