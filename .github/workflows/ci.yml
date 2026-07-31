@@ -24,13 +24,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Three deliberate cells instead of a full grid: the oldest supported
-        # combination, the most common production one, and the newest of
-        # everything. Intermediate Rails/Ruby versions sit strictly between the
-        # edges and haven't historically broken independently of them.
+        # Deliberate compatibility cells: the oldest supported combination,
+        # Solid Queue 1.6, the most common production one, and the newest of
+        # everything. Intermediate Rails/Ruby versions sit strictly between
+        # the edges and haven't historically broken independently of them.
         include:
           - ruby-version: 3.2
             gemfile: rails_7_1
+          - ruby-version: 3.2
+            gemfile: solid_queue_1_6
           - ruby-version: 3.4
             gemfile: rails_8_1
           - ruby-version: "4.0"
